@@ -1,6 +1,6 @@
 # CanfdIMU
 
-CANFD/串口IMU通信模块 CANFD/UART IMU Communication Module
+CAN/串口IMU通信模块 CAN/UART IMU Communication Module
 
 ## Required Hardware
 

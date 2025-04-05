@@ -2,8 +2,8 @@
 
 // clang-format off
 /* === MODULE MANIFEST ===
-module_name: CanfdIMU
-module_description: CANFD/串口IMU通信模块 CANFD/UART IMU Communication Module
+module_name: CanIMU
+module_description: CAN/串口IMU通信模块 CAN/UART IMU Communication Module
 constructor_args:
   - accl_topic: "imu_accl"
   - gyro_topic: "imu_gyro"
@@ -11,8 +11,8 @@ constructor_args:
   - eulr_topic: "imu_eulr"
   - task_stack_depth_uart: 384
   - task_stack_depth_can: 384
-required_hardware: imu_fdcan imu_data_uart ramfs database
-repository: https://github.com/xrobot-org/CanfdIMU
+required_hardware: imu_can imu_data_uart ramfs database
+repository: https://github.com/xrobot-org/CanIMU
 === END MANIFEST === */
 // clang-format on
 
@@ -28,21 +28,20 @@ repository: https://github.com/xrobot-org/CanfdIMU
 #include "uart.hpp"
 
 template <typename HardwareContainer>
-class CanfdIMU : public LibXR::Application {
+class CanIMU : public LibXR::Application {
  public:
-  explicit CanfdIMU(HardwareContainer& hw, LibXR::ApplicationManager& app,
-                    const char* accl_topic, const char* gyro_topic,
-                    const char* quat_topic, const char* eulr_topic,
-                    uint32_t task_stack_depth_uart,
-                    uint32_t task_stack_depth_can)
+  explicit CanIMU(HardwareContainer& hw, LibXR::ApplicationManager& app,
+                  const char* accl_topic, const char* gyro_topic,
+                  const char* quat_topic, const char* eulr_topic,
+                  uint32_t task_stack_depth_uart, uint32_t task_stack_depth_can)
       : accl_topic_name_(accl_topic),
         gyro_topic_name_(gyro_topic),
         quat_topic_name_(quat_topic),
         eulr_topic_name_(eulr_topic),
-        can_(hw.template FindOrExit<LibXR::FDCAN>({"imu_fdcan"})),
+        can_(hw.template FindOrExit<LibXR::CAN>({"imu_can"})),
         uart_(hw.template FindOrExit<LibXR::UART>({"imu_data_uart"})),
         config_(*hw.template FindOrExit<LibXR::Database>({"database"}),
-                "canfd_imu",
+                "can_imu",
                 Configuration{0x30, 1, false, true, true, true, false, false,
                               true}),
         cmd_file_(LibXR::RamFS::CreateFile("set_imu", CommandFunc, this)) {
@@ -50,9 +49,9 @@ class CanfdIMU : public LibXR::Application {
 
     hw.template FindOrExit<LibXR::RamFS>({"ramfs"})->Add(cmd_file_);
 
-    thread_uart_.Create(this, ThreadUart, "canfd_imu_uart",
-                        task_stack_depth_uart, LibXR::Thread::Priority::MEDIUM);
-    thread_can_.Create(this, ThreadCan, "canfd_imu_can", task_stack_depth_can,
+    thread_uart_.Create(this, ThreadUart, "can_imu_uart", task_stack_depth_uart,
+                        LibXR::Thread::Priority::MEDIUM);
+    thread_can_.Create(this, ThreadCan, "can_imu_can", task_stack_depth_can,
                        LibXR::Thread::Priority::MEDIUM);
   }
 
@@ -60,12 +59,10 @@ class CanfdIMU : public LibXR::Application {
     // Optional: Add self-check, debug output, frequency monitor, etc.
   }
 
-  static int CommandFunc(CanfdIMU<HardwareContainer>* imu, int argc,
+  static int CommandFunc(CanIMU<HardwareContainer>* imu, int argc,
                          char** argv) {
     if (argc == 1) {
-      if (imu->config_.data_.canfd_enabled) {
-        LibXR::STDIO::Printf("canfd mode\r\n");
-      } else if (imu->config_.data_.can_enabled) {
+      if (imu->config_.data_.can_enabled) {
         LibXR::STDIO::Printf("can mode\r\ndata:");
         if (imu->config_.data_.accl_enabled) {
           LibXR::STDIO::Printf("accl,");
@@ -81,7 +78,7 @@ class CanfdIMU : public LibXR::Application {
         }
         LibXR::STDIO::Printf("\r\n");
       } else {
-        LibXR::STDIO::Printf("can/canfd output disabled.\r\n");
+        LibXR::STDIO::Printf("can output disabled.\r\n");
       }
 
       if (imu->config_.data_.uart_enabled) {
@@ -97,7 +94,7 @@ class CanfdIMU : public LibXR::Application {
       LibXR::STDIO::Printf("\tset_can_id [id]    设置can id\r\n");
       LibXR::STDIO::Printf(
           "\tenable/disable     "
-          "[accl/gyro/quat/eulr/canfd/can/uart]\r\n");
+          "[accl/gyro/quat/eulr/can/uart]\r\n");
     } else if (argc == 3 && strcmp(argv[1], "set_delay") == 0) {
       int delay = std::stoi(argv[2]);
 
@@ -123,16 +120,8 @@ class CanfdIMU : public LibXR::Application {
         imu->config_.data_.quat_enabled = true;
       } else if (strcmp(argv[2], "eulr") == 0) {
         imu->config_.data_.eulr_enabled = true;
-      } else if (strcmp(argv[2], "canfd") == 0) {
-        imu->config_.data_.canfd_enabled = true;
-        if (!imu->config_.data_.can_enabled) {
-          imu->config_.data_.can_enabled = true;
-        }
       } else if (strcmp(argv[2], "can") == 0) {
         imu->config_.data_.can_enabled = true;
-        if (imu->config_.data_.canfd_enabled) {
-          imu->config_.data_.canfd_enabled = false;
-        }
       } else if (strcmp(argv[2], "uart") == 0) {
         imu->config_.data_.uart_enabled = true;
       } else {
@@ -150,8 +139,6 @@ class CanfdIMU : public LibXR::Application {
         imu->config_.data_.quat_enabled = false;
       } else if (strcmp(argv[2], "eulr") == 0) {
         imu->config_.data_.eulr_enabled = false;
-      } else if (strcmp(argv[2], "canfd") == 0) {
-        imu->config_.data_.canfd_enabled = false;
       } else if (strcmp(argv[2], "can") == 0) {
         imu->config_.data_.can_enabled = false;
       } else if (strcmp(argv[2], "uart") == 0) {
@@ -186,7 +173,6 @@ class CanfdIMU : public LibXR::Application {
   struct __attribute__((packed)) Configuration {
     uint32_t id;
     uint32_t fb_cycle;
-    bool canfd_enabled;
     bool can_enabled;
     bool uart_enabled;
     bool eulr_enabled;
@@ -204,14 +190,6 @@ class CanfdIMU : public LibXR::Application {
     float accl[3] = {0.0f};
     float eulr[3] = {0.0f};
     uint8_t crc8 = 0;
-  };
-
-  struct __attribute__((packed)) DataCanfd {
-    uint32_t time = 0;
-    float quat[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-    float gyro[3] = {0.0f};
-    float accl[3] = {0.0f};
-    float eulr[3] = {0.0f};
   };
 
   union CanData3 {
@@ -239,7 +217,7 @@ class CanfdIMU : public LibXR::Application {
 
   enum class CanPackID : uint32_t { ACCL = 0, GYRO = 1, EULR = 3, QUAT = 4 };
 
-  LibXR::FDCAN* can_;
+  LibXR::CAN* can_;
   LibXR::UART* uart_;
   LibXR::Database::Key<Configuration> config_;
 
@@ -254,7 +232,7 @@ class CanfdIMU : public LibXR::Application {
   Eigen::Matrix<float, 3, 1> gyro_ = {0.0f, 0.0f, 0.0f};
   Eigen::Matrix<float, 3, 1> accl_ = {0.0f, 0.0f, 0.0f};
 
-  static void ThreadUart(CanfdIMU* self) {
+  static void ThreadUart(CanIMU* self) {
     self->uart_->SetConfig({1000000, LibXR::UART::Parity::NO_PARITY, 8, 1});
 
     auto sub_accl = LibXR::Topic(self->accl_topic_name_, sizeof(self->accl_));
@@ -295,36 +273,16 @@ class CanfdIMU : public LibXR::Application {
     }
   }
 
-  static void ThreadCan(CanfdIMU* self) {
+  static void ThreadCan(CanIMU* self) {
     auto last_waskup_time = LibXR::Timebase::GetMilliseconds();
-
-    LibXR::FDCAN::FDPack pack = {};
 
     LibXR::CAN::ClassicPack classic_pack = {};
 
     CanData3* can_data3 = reinterpret_cast<CanData3*>(classic_pack.data);
     CanData4* can_data4 = reinterpret_cast<CanData4*>(classic_pack.data);
 
-    DataCanfd send_buffer = {};
-
     while (true) {
-      if (self->config_.data_.canfd_enabled) {
-        send_buffer.time = LibXR::Timebase::GetMilliseconds();
-        send_buffer.quat[0] = self->quat_.w();
-        send_buffer.quat[1] = self->quat_.x();
-        send_buffer.quat[2] = self->quat_.y();
-        send_buffer.quat[3] = self->quat_.z();
-        memcpy(send_buffer.gyro, self->gyro_.data(), sizeof(send_buffer.gyro));
-        memcpy(send_buffer.accl, self->accl_.data(), sizeof(send_buffer.accl));
-        memcpy(send_buffer.eulr, self->eulr_.data_, sizeof(send_buffer.eulr));
-
-        memcpy(pack.data, &send_buffer, sizeof(send_buffer));
-        pack.type = LibXR::CAN::Type::STANDARD;
-        pack.id = self->config_.data_.id;
-        pack.len = sizeof(send_buffer);
-
-        self->can_->AddMessage(pack);
-      } else if (self->config_.data_.can_enabled) {
+      if (self->config_.data_.can_enabled) {
         classic_pack.type = LibXR::CAN::Type::STANDARD;
 
         using Encoder21 = LibXR::FloatEncoder<21>;
