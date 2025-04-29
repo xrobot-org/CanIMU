@@ -42,8 +42,7 @@ class CanIMU : public LibXR::Application {
         uart_(hw.template FindOrExit<LibXR::UART>({"imu_data_uart"})),
         config_(*hw.template FindOrExit<LibXR::Database>({"database"}),
                 "can_imu",
-                Configuration{0x30, 1, false, true, true, true, false, false,
-                              true}),
+                Configuration{0x30, 1, true, true, true, false, false, true}),
         cmd_file_(LibXR::RamFS::CreateFile("set_imu", CommandFunc, this)) {
     app.Register(*this);
 
