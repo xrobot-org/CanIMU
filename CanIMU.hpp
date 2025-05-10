@@ -27,10 +27,9 @@ repository: https://github.com/xrobot-org/CanIMU
 #include "timebase.hpp"
 #include "uart.hpp"
 
-template <typename HardwareContainer>
 class CanIMU : public LibXR::Application {
  public:
-  explicit CanIMU(HardwareContainer& hw, LibXR::ApplicationManager& app,
+  explicit CanIMU(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
                   const char* accl_topic, const char* gyro_topic,
                   const char* quat_topic, const char* eulr_topic,
                   uint32_t task_stack_depth_uart, uint32_t task_stack_depth_can)
@@ -58,8 +57,7 @@ class CanIMU : public LibXR::Application {
     // Optional: Add self-check, debug output, frequency monitor, etc.
   }
 
-  static int CommandFunc(CanIMU<HardwareContainer>* imu, int argc,
-                         char** argv) {
+  static int CommandFunc(CanIMU* imu, int argc, char** argv) {
     if (argc == 1) {
       if (imu->config_.data_.can_enabled) {
         LibXR::STDIO::Printf("can mode\r\ndata:");
