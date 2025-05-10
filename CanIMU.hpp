@@ -311,9 +311,9 @@ class CanIMU : public LibXR::Application {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::EULR);
           Encoder21 encoder(-M_PI, M_PI);  // Euler angles in rad
-          can_data3->data1 = encoder.Encode(self->eulr_.pitch_);
-          can_data3->data2 = encoder.Encode(self->eulr_.roll_);
-          can_data3->data3 = encoder.Encode(self->eulr_.yaw_);
+          can_data3->data1 = encoder.Encode(self->eulr_.Pitch());
+          can_data3->data2 = encoder.Encode(self->eulr_.Roll());
+          can_data3->data3 = encoder.Encode(self->eulr_.Yaw());
           self->can_->AddMessage(classic_pack);
         }
 
