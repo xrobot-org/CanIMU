@@ -1,8 +1,7 @@
 #pragma once
 
 // clang-format off
-/* === MODULE MANIFEST ===
-module_name: CanIMU
+/* === MODULE MANIFEST V2 ===
 module_description: CAN/串口IMU通信模块 CAN/UART IMU Communication Module
 constructor_args:
   - accl_topic: "imu_accl"
@@ -11,8 +10,9 @@ constructor_args:
   - eulr_topic: "imu_eulr"
   - task_stack_depth_uart: 384
   - task_stack_depth_can: 384
+template_args: []
 required_hardware: imu_can imu_data_uart ramfs database
-repository: https://github.com/xrobot-org/CanIMU
+depends: []
 === END MANIFEST === */
 // clang-format on
 
@@ -263,7 +263,7 @@ class CanIMU : public LibXR::Application {
             reinterpret_cast<const uint8_t*>(&send_buffer),
             sizeof(Data) - sizeof(uint8_t));
 
-        self->uart_->write_port_(send_buffer, write_op);
+        self->uart_->Write(send_buffer, write_op);
       }
 
       LibXR::Thread::SleepUntil(last_waskup_time, self->config_.data_.fb_cycle);
