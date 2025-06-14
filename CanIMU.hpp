@@ -8,8 +8,8 @@ constructor_args:
   - gyro_topic: "imu_gyro"
   - quat_topic: "imu_quat"
   - eulr_topic: "imu_eulr"
-  - task_stack_depth_uart: 384
-  - task_stack_depth_can: 384
+  - task_stack_depth_uart: 1536
+  - task_stack_depth_can: 1536
 template_args: []
 required_hardware: imu_can imu_data_uart ramfs database
 depends: []
