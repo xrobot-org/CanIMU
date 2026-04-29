@@ -60,38 +60,38 @@ class CanIMU : public LibXR::Application {
   static int CommandFunc(CanIMU* imu, int argc, char** argv) {
     if (argc == 1) {
       if (imu->config_.data_.can_enabled) {
-        LibXR::STDIO::Printf("can mode\r\ndata:");
+        LibXR::STDIO::Printf<"can mode\r\ndata:">();
         if (imu->config_.data_.accl_enabled) {
-          LibXR::STDIO::Printf("accl,");
+          LibXR::STDIO::Printf<"accl,">();
         }
         if (imu->config_.data_.gyro_enabled) {
-          LibXR::STDIO::Printf("gyro,");
+          LibXR::STDIO::Printf<"gyro,">();
         }
         if (imu->config_.data_.quat_enabled) {
-          LibXR::STDIO::Printf("quat,");
+          LibXR::STDIO::Printf<"quat,">();
         }
         if (imu->config_.data_.eulr_enabled) {
-          LibXR::STDIO::Printf("eulr,");
+          LibXR::STDIO::Printf<"eulr,">();
         }
-        LibXR::STDIO::Printf("\r\n");
+        LibXR::STDIO::Printf<"\r\n">();
       } else {
-        LibXR::STDIO::Printf("can output disabled.\r\n");
+        LibXR::STDIO::Printf<"can output disabled.\r\n">();
       }
 
       if (imu->config_.data_.uart_enabled) {
-        LibXR::STDIO::Printf("uart output enabled.\r\n");
+        LibXR::STDIO::Printf<"uart output enabled.\r\n">();
       } else {
-        LibXR::STDIO::Printf("uart output disabled.\r\n");
+        LibXR::STDIO::Printf<"uart output disabled.\r\n">();
       }
 
-      LibXR::STDIO::Printf("feedback delay:%d\r\n",
-                           imu->config_.data_.fb_cycle);
-      LibXR::STDIO::Printf("id:%d\r\n\r\nUsage:\r\n", imu->config_.data_.id);
-      LibXR::STDIO::Printf("\tset_delay  [time]  设置发送延时ms\r\n");
-      LibXR::STDIO::Printf("\tset_can_id [id]    设置can id\r\n");
-      LibXR::STDIO::Printf(
-          "\tenable/disable     "
-          "[accl/gyro/quat/eulr/can/uart]\r\n");
+      LibXR::STDIO::Printf<"feedback delay:%u\r\n">(
+          static_cast<unsigned>(imu->config_.data_.fb_cycle));
+      LibXR::STDIO::Printf<"id:%u\r\n\r\nUsage:\r\n">(
+          static_cast<unsigned>(imu->config_.data_.id));
+      LibXR::STDIO::Printf<"\tset_delay  [time]  设置发送延时ms\r\n">();
+      LibXR::STDIO::Printf<"\tset_can_id [id]    设置can id\r\n">();
+      LibXR::STDIO::Printf<"\tenable/disable     "
+          "[accl/gyro/quat/eulr/can/uart]\r\n">();
     } else if (argc == 3 && strcmp(argv[1], "set_delay") == 0) {
       int delay = std::stoi(argv[2]);
 
@@ -105,7 +105,7 @@ class CanIMU : public LibXR::Application {
 
       imu->config_.data_.fb_cycle = delay;
 
-      LibXR::STDIO::Printf("delay:%d\r\n", delay);
+      LibXR::STDIO::Printf<"delay:%d\r\n">(delay);
 
       imu->config_.Set(imu->config_.data_);
     } else if (argc == 3 && strcmp(argv[1], "enable") == 0) {
@@ -122,7 +122,7 @@ class CanIMU : public LibXR::Application {
       } else if (strcmp(argv[2], "uart") == 0) {
         imu->config_.data_.uart_enabled = true;
       } else {
-        LibXR::STDIO::Printf("命令错误\r\n");
+        LibXR::STDIO::Printf<"命令错误\r\n">();
         return -1;
       }
 
@@ -141,7 +141,7 @@ class CanIMU : public LibXR::Application {
       } else if (strcmp(argv[2], "uart") == 0) {
         imu->config_.data_.uart_enabled = false;
       } else {
-        LibXR::STDIO::Printf("命令错误\r\n");
+        LibXR::STDIO::Printf<"命令错误\r\n">();
         return -1;
       }
 
@@ -151,11 +151,11 @@ class CanIMU : public LibXR::Application {
 
       imu->config_.data_.id = id;
 
-      LibXR::STDIO::Printf("can_id:%d\r\n", id);
+      LibXR::STDIO::Printf<"can_id:%d\r\n">(id);
 
       imu->config_.Set(imu->config_.data_);
     } else {
-      LibXR::STDIO::Printf("命令错误\r\n");
+      LibXR::STDIO::Printf<"命令错误\r\n">();
     }
 
     return 0;
