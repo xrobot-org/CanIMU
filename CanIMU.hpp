@@ -47,6 +47,8 @@ class CanIMU : public LibXR::Application {
 
     hw.template FindOrExit<LibXR::RamFS>({"ramfs"})->Add(cmd_file_);
 
+    RegisterTopicCallbacks();
+
     thread_uart_.Create(this, ThreadUart, "can_imu_uart", task_stack_depth_uart,
                         LibXR::Thread::Priority::MEDIUM);
     thread_can_.Create(this, ThreadCan, "can_imu_can", task_stack_depth_can,
@@ -229,13 +231,106 @@ class CanIMU : public LibXR::Application {
   Eigen::Matrix<float, 3, 1> gyro_ = {0.0f, 0.0f, 0.0f};
   Eigen::Matrix<float, 3, 1> accl_ = {0.0f, 0.0f, 0.0f};
 
+  struct Vector3Sample {
+    float data[3];
+  };
+
+  struct QuaternionSample {
+    float data[4];
+  };
+
+  LibXR::MPMCQueue<Vector3Sample> accl_queue_{4};
+  LibXR::MPMCQueue<Vector3Sample> gyro_queue_{4};
+  LibXR::MPMCQueue<QuaternionSample> quat_queue_{4};
+  LibXR::MPMCQueue<Vector3Sample> eulr_queue_{4};
+
+  LibXR::Topic::Callback accl_callback_;
+  LibXR::Topic::Callback gyro_callback_;
+  LibXR::Topic::Callback quat_callback_;
+  LibXR::Topic::Callback eulr_callback_;
+  LibXR::Mutex data_mutex_;
+
+  void RegisterTopicCallbacks() {
+    auto accl_topic =
+        LibXR::Topic::CreateTopic<decltype(accl_)>(accl_topic_name_);
+    auto gyro_topic =
+        LibXR::Topic::CreateTopic<decltype(gyro_)>(gyro_topic_name_);
+    auto quat_topic =
+        LibXR::Topic::CreateTopic<decltype(quat_)>(quat_topic_name_);
+    auto eulr_topic =
+        LibXR::Topic::CreateTopic<decltype(eulr_)>(eulr_topic_name_);
+
+    accl_callback_ = LibXR::Topic::Callback::Create(OnAcclTopic, this);
+    gyro_callback_ = LibXR::Topic::Callback::Create(OnGyroTopic, this);
+    quat_callback_ = LibXR::Topic::Callback::Create(OnQuatTopic, this);
+    eulr_callback_ = LibXR::Topic::Callback::Create(OnEulrTopic, this);
+
+    accl_topic.RegisterCallback(accl_callback_);
+    gyro_topic.RegisterCallback(gyro_callback_);
+    quat_topic.RegisterCallback(quat_callback_);
+    eulr_topic.RegisterCallback(eulr_callback_);
+  }
+
+  template <typename Queue, typename Sample>
+  static void PushLatest(Queue& queue, const Sample& sample) {
+    if (queue.Push(sample) == LibXR::ErrorCode::OK) {
+      return;
+    }
+
+    Sample dropped{};
+    (void)queue.Pop(dropped);
+    (void)queue.Push(sample);
+  }
+
+  static void OnAcclTopic(bool, CanIMU* self,
+                          const Eigen::Matrix<float, 3, 1>& data) {
+    const Vector3Sample sample{{data.x(), data.y(), data.z()}};
+    PushLatest(self->accl_queue_, sample);
+  }
+
+  static void OnGyroTopic(bool, CanIMU* self,
+                          const Eigen::Matrix<float, 3, 1>& data) {
+    const Vector3Sample sample{{data.x(), data.y(), data.z()}};
+    PushLatest(self->gyro_queue_, sample);
+  }
+
+  static void OnQuatTopic(bool, CanIMU* self,
+                          const LibXR::Quaternion<float>& data) {
+    const QuaternionSample sample{{data.w(), data.x(), data.y(), data.z()}};
+    PushLatest(self->quat_queue_, sample);
+  }
+
+  static void OnEulrTopic(bool, CanIMU* self,
+                          const LibXR::EulerAngle<float>& data) {
+    const Vector3Sample sample{{data.Roll(), data.Pitch(), data.Yaw()}};
+    PushLatest(self->eulr_queue_, sample);
+  }
+
+  void DrainTopicQueues() {
+    Vector3Sample vector_sample{};
+    QuaternionSample quat_sample{};
+
+    LibXR::Mutex::LockGuard lock(data_mutex_);
+
+    while (accl_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+      accl_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
+    }
+
+    while (gyro_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+      gyro_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
+    }
+
+    while (quat_queue_.Pop(quat_sample) == LibXR::ErrorCode::OK) {
+      quat_ = LibXR::Quaternion<float>(quat_sample.data);
+    }
+
+    while (eulr_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+      eulr_ = LibXR::EulerAngle<float>(vector_sample.data);
+    }
+  }
+
   static void ThreadUart(CanIMU* self) {
     self->uart_->SetConfig({1000000, LibXR::UART::Parity::NO_PARITY, 8, 1});
-
-    auto sub_accl = LibXR::Topic(self->accl_topic_name_, sizeof(self->accl_));
-    auto sub_gyro = LibXR::Topic(self->gyro_topic_name_, sizeof(self->gyro_));
-    auto sub_quat = LibXR::Topic(self->quat_topic_name_, sizeof(self->quat_));
-    auto sub_eulr = LibXR::Topic(self->eulr_topic_name_, sizeof(self->eulr_));
 
     Data send_buffer = {};
     LibXR::WriteOperation write_op(self->uart_write_sem_);
@@ -243,22 +338,22 @@ class CanIMU : public LibXR::Application {
     auto last_waskup_time = LibXR::Timebase::GetMilliseconds();
 
     while (true) {
-      sub_accl.DumpData(self->accl_);
-      sub_gyro.DumpData(self->gyro_);
-      sub_quat.DumpData(self->quat_);
-      sub_eulr.DumpData(self->eulr_);
+      self->DrainTopicQueues();
 
       if (self->config_.data_.uart_enabled) {
         send_buffer.prefix = 0xA5;
         send_buffer.id = self->config_.data_.id;
         send_buffer.time = LibXR::Timebase::GetMilliseconds();
-        send_buffer.quat[0] = self->quat_.w();
-        send_buffer.quat[1] = self->quat_.x();
-        send_buffer.quat[2] = self->quat_.y();
-        send_buffer.quat[3] = self->quat_.z();
-        memcpy(send_buffer.gyro, self->gyro_.data(), sizeof(send_buffer.gyro));
-        memcpy(send_buffer.accl, self->accl_.data(), sizeof(send_buffer.accl));
-        memcpy(send_buffer.eulr, self->eulr_.data_, sizeof(send_buffer.eulr));
+        {
+          LibXR::Mutex::LockGuard lock(self->data_mutex_);
+          send_buffer.quat[0] = self->quat_.w();
+          send_buffer.quat[1] = self->quat_.x();
+          send_buffer.quat[2] = self->quat_.y();
+          send_buffer.quat[3] = self->quat_.z();
+          memcpy(send_buffer.gyro, self->gyro_.data(), sizeof(send_buffer.gyro));
+          memcpy(send_buffer.accl, self->accl_.data(), sizeof(send_buffer.accl));
+          memcpy(send_buffer.eulr, self->eulr_.data_, sizeof(send_buffer.eulr));
+        }
         send_buffer.crc8 = LibXR::CRC8::Calculate(
             reinterpret_cast<const uint8_t*>(&send_buffer),
             sizeof(Data) - sizeof(uint8_t));
@@ -290,9 +385,14 @@ class CanIMU : public LibXR::Application {
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::GYRO);
           Encoder21 encoder(-2000.0f * M_PI / 180.0f,
                             2000.0f * M_PI / 180.0f);  // rad/s
-          can_data3->data1 = encoder.Encode(self->gyro_.x());
-          can_data3->data2 = encoder.Encode(self->gyro_.y());
-          can_data3->data3 = encoder.Encode(self->gyro_.z());
+          Eigen::Matrix<float, 3, 1> gyro;
+          {
+            LibXR::Mutex::LockGuard lock(self->data_mutex_);
+            gyro = self->gyro_;
+          }
+          can_data3->data1 = encoder.Encode(gyro.x());
+          can_data3->data2 = encoder.Encode(gyro.y());
+          can_data3->data3 = encoder.Encode(gyro.z());
 
           self->can_->AddMessage(classic_pack);
         }
@@ -301,9 +401,14 @@ class CanIMU : public LibXR::Application {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::ACCL);
           Encoder21 encoder(-24.0f, 24.0f);  // ±24g
-          can_data3->data1 = encoder.Encode(self->accl_.x());
-          can_data3->data2 = encoder.Encode(self->accl_.y());
-          can_data3->data3 = encoder.Encode(self->accl_.z());
+          Eigen::Matrix<float, 3, 1> accl;
+          {
+            LibXR::Mutex::LockGuard lock(self->data_mutex_);
+            accl = self->accl_;
+          }
+          can_data3->data1 = encoder.Encode(accl.x());
+          can_data3->data2 = encoder.Encode(accl.y());
+          can_data3->data3 = encoder.Encode(accl.z());
 
           self->can_->AddMessage(classic_pack);
         }
@@ -312,9 +417,14 @@ class CanIMU : public LibXR::Application {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::EULR);
           Encoder21 encoder(-M_PI, M_PI);  // Euler angles in rad
-          can_data3->data1 = encoder.Encode(self->eulr_.Pitch());
-          can_data3->data2 = encoder.Encode(self->eulr_.Roll());
-          can_data3->data3 = encoder.Encode(self->eulr_.Yaw());
+          LibXR::EulerAngle<float> eulr;
+          {
+            LibXR::Mutex::LockGuard lock(self->data_mutex_);
+            eulr = self->eulr_;
+          }
+          can_data3->data1 = encoder.Encode(eulr.Pitch());
+          can_data3->data2 = encoder.Encode(eulr.Roll());
+          can_data3->data3 = encoder.Encode(eulr.Yaw());
           self->can_->AddMessage(classic_pack);
         }
 
@@ -323,10 +433,15 @@ class CanIMU : public LibXR::Application {
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::QUAT);
           constexpr float SCALE =
               static_cast<float>(INT16_MAX);  // int16_t scaling
-          can_data4->data[0] = static_cast<int16_t>(self->quat_.w() * SCALE);
-          can_data4->data[1] = static_cast<int16_t>(self->quat_.x() * SCALE);
-          can_data4->data[2] = static_cast<int16_t>(self->quat_.y() * SCALE);
-          can_data4->data[3] = static_cast<int16_t>(self->quat_.z() * SCALE);
+          LibXR::Quaternion<float> quat;
+          {
+            LibXR::Mutex::LockGuard lock(self->data_mutex_);
+            quat = self->quat_;
+          }
+          can_data4->data[0] = static_cast<int16_t>(quat.w() * SCALE);
+          can_data4->data[1] = static_cast<int16_t>(quat.x() * SCALE);
+          can_data4->data[2] = static_cast<int16_t>(quat.y() * SCALE);
+          can_data4->data[3] = static_cast<int16_t>(quat.z() * SCALE);
           self->can_->AddMessage(classic_pack);
         }
       }
