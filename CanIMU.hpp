@@ -23,28 +23,39 @@ depends: []
 class CanIMU
 {
  public:
-  explicit CanIMU(LibXR::CAN& external_imu_can, LibXR::UART& external_imu_data_uart,
-                  LibXR::Database& external_database, LibXR::RamFS& external_ramfs,
-                  const char* accl_topic, const char* gyro_topic, const char* quat_topic,
-                  const char* eulr_topic, uint32_t task_stack_depth_uart,
-                  uint32_t task_stack_depth_can)
-      : accl_topic_name_(accl_topic),
-        gyro_topic_name_(gyro_topic),
-        quat_topic_name_(quat_topic),
-        eulr_topic_name_(eulr_topic),
-        can_(std::addressof(external_imu_can)),
-        uart_(std::addressof(external_imu_data_uart)),
-        config_(external_database, "can_imu",
+  struct Param
+  {
+    const char* accl_topic;
+    const char* gyro_topic;
+    const char* quat_topic;
+    const char* eulr_topic;
+    uint32_t task_stack_depth_uart;
+    uint32_t task_stack_depth_can;
+  };
+
+  explicit CanIMU(
+      LibXR::CAN& can_bus,
+      LibXR::UART& uart,
+      LibXR::Database& database,
+      LibXR::RamFS& ramfs,
+      const Param& param = {.accl_topic = "imu_accl", .gyro_topic = "imu_gyro", .quat_topic = "imu_quat", .eulr_topic = "imu_eulr", .task_stack_depth_uart = 1536, .task_stack_depth_can = 1536})
+      : accl_topic_name_(param.accl_topic),
+        gyro_topic_name_(param.gyro_topic),
+        quat_topic_name_(param.quat_topic),
+        eulr_topic_name_(param.eulr_topic),
+        can_(std::addressof(can_bus)),
+        uart_(std::addressof(uart)),
+        config_(database, "can_imu",
                 Configuration{0x30, 1, true, true, true, false, false, true}),
         cmd_file_(LibXR::RamFS::CreateFile("set_imu", CommandFunc, this))
   {
-    external_ramfs.Add(cmd_file_);
+    ramfs.Add(cmd_file_);
 
     RegisterTopicCallbacks();
 
-    thread_uart_.Create(this, ThreadUart, "can_imu_uart", task_stack_depth_uart,
+    thread_uart_.Create(this, ThreadUart, "can_imu_uart", param.task_stack_depth_uart,
                         LibXR::Thread::Priority::MEDIUM);
-    thread_can_.Create(this, ThreadCan, "can_imu_can", task_stack_depth_can,
+    thread_can_.Create(this, ThreadCan, "can_imu_can", param.task_stack_depth_can,
                        LibXR::Thread::Priority::MEDIUM);
   }
 
