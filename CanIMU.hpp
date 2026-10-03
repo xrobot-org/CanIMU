@@ -2,7 +2,7 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: CAN/串口IMU通信模块 CAN/UART IMU Communication Module
+module_description: CAN 与 UART IMU 数据转发模块 / Module that forwards IMU data over classic CAN and UART
 depends: []
 === END MANIFEST === */
 // clang-format on
