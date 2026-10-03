@@ -20,19 +20,50 @@ depends: []
 #include "timebase.hpp"
 #include "uart.hpp"
 
+/**
+ * @brief IMU 数据转发模块，订阅 IMU Topic 并通过经典 CAN 与 UART 周期发送。
+ *        Module that forwards IMU data: it subscribes to the IMU Topics and sends them
+ *        periodically over classic CAN and UART.
+ */
 class CanIMU
 {
  public:
+  /**
+   * @brief CanIMU 配置参数。
+   *        CanIMU configuration parameters.
+   */
   struct Param
   {
-    const char* accl_topic;
-    const char* gyro_topic;
-    const char* quat_topic;
-    const char* eulr_topic;
-    uint32_t task_stack_depth_uart;
-    uint32_t task_stack_depth_can;
+    const char* accl_topic;  ///< 订阅的加速度 Topic 名称
+    ///< Name of the subscribed acceleration Topic
+    const char* gyro_topic;  ///< 订阅的角速度 Topic 名称
+    ///< Name of the subscribed angular-velocity Topic
+    const char* quat_topic;  ///< 订阅的四元数 Topic 名称
+    ///< Name of the subscribed quaternion Topic
+    const char* eulr_topic;  ///< 订阅的欧拉角 Topic 名称
+    ///< Name of the subscribed Euler-angle Topic
+    uint32_t task_stack_depth_uart;  ///< UART 发送线程栈深
+    ///< Stack depth of the UART thread
+    uint32_t task_stack_depth_can;  ///< CAN 发送线程栈深
+    ///< Stack depth of the CAN thread
   };
 
+  /**
+   * @brief 构造 CanIMU：注册 RamFS 命令与 Topic 回调，创建 UART 与 CAN 发送线程。
+   *        Construct CanIMU: register the RamFS command and the Topic callbacks, and
+   *        create the UART and CAN sending threads.
+   *
+   * @param can_bus 发送 IMU 数据的 CAN。
+   *                CAN bus that sends the IMU data.
+   * @param uart 发送 IMU 数据的 UART。
+   *             UART that sends the IMU data.
+   * @param database 保存输出配置的 Database。
+   *                 Database that stores the output configuration.
+   * @param ramfs 接收 `set_imu` 命令的 RamFS。
+   *              RamFS that receives the `set_imu` command.
+   * @param param 配置参数。
+   *              Configuration parameters.
+   */
   explicit CanIMU(
       LibXR::CAN& can_bus,
       LibXR::UART& uart,
@@ -59,6 +90,20 @@ class CanIMU
                        LibXR::Thread::Priority::MEDIUM);
   }
 
+  /**
+   * @brief RamFS 命令 `set_imu`：查看状态，设置周期与 ID，开关单项输出，并写入 Database。
+   *        RamFS command `set_imu`: show the state, set the period and ID, switch single
+   *        outputs, and write the Database.
+   *
+   * @param imu CanIMU 实例。
+   *            CanIMU instance.
+   * @param argc 参数个数。
+   *             Argument count.
+   * @param argv 参数列表。
+   *             Argument list.
+   * @return 0 表示命令已处理；开关名无效时返回 -1。
+   *         0 when the command is handled; -1 when the switch name is invalid.
+   */
   static int CommandFunc(CanIMU* imu, int argc, char** argv)
   {
     if (argc == 1)
