@@ -7,6 +7,9 @@ depends: []
 === END MANIFEST === */
 // clang-format on
 
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -164,7 +167,12 @@ class CanIMU
     }
     else if (argc == 3 && strcmp(argv[1], "set_delay") == 0)
     {
-      int delay = std::stoi(argv[2]);
+      int delay = 0;
+      if (!ParseInt(argv[2], delay))
+      {
+        LibXR::STDIO::Printf<"命令错误\r\n">();
+        return -1;
+      }
 
       if (delay > 1000)
       {
@@ -252,7 +260,12 @@ class CanIMU
     }
     else if (argc == 3 && strcmp(argv[1], "set_can_id") == 0)
     {
-      int id = std::stoi(argv[2]);
+      int id = 0;
+      if (!ParseInt(argv[2], id))
+      {
+        LibXR::STDIO::Printf<"命令错误\r\n">();
+        return -1;
+      }
 
       imu->config_.data_.id = id;
 
@@ -269,6 +282,36 @@ class CanIMU
   }
 
  private:
+  /**
+   * @brief 解析十进制整数；整个字符串必须是合法数字且不溢出 int。
+   *        Parse a decimal integer; the whole string must be a valid number that fits in
+   *        int.
+   *
+   * @param text 输入字符串。
+   *             Input string.
+   * @param value 解析结果。
+   *              Parsed value.
+   * @return 解析成功返回 true。
+   *         True if parsing succeeded.
+   */
+  static bool ParseInt(const char* text, int& value)
+  {
+    if (text == nullptr || text[0] == '\0')
+    {
+      return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0' || parsed < INT_MIN ||
+        parsed > INT_MAX)
+    {
+      return false;
+    }
+    value = static_cast<int>(parsed);
+    return true;
+  }
+
   const char* accl_topic_name_;
   const char* gyro_topic_name_;
   const char* quat_topic_name_;
