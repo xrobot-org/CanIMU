@@ -4,7 +4,7 @@ CAN 与 UART IMU 数据转发模块 / Module that forwards IMU data over classic
 
 ## 1. 模块作用 / Purpose
 
-构造后，CanIMU 订阅四个 IMU Topic（加速度、角速度、四元数、欧拉角），各保留最近的样本，并以 `fb_cycle` 毫秒为周期通过经典 CAN 和 UART 发出。输出开关、周期和 CAN ID 保存在 Database 的键 `can_imu` 中，可用 RamFS 命令 `set_imu` 在运行时修改，修改立即生效。
+构造后，CanIMU 订阅四个 IMU Topic（加速度、角速度、四元数、欧拉角），各保留最近的样本，并以 `fb_cycle` 毫秒为周期通过经典 CAN 和 UART 发出。`fb_cycle` 是配置的字段，该配置保存在 Database 的键 `can_imu` 中，另含 CAN ID（`id`）与各输出开关；构造时读取该键的值，键缺失时以默认配置创建。配置可用 RamFS 命令 `set_imu` 在运行时修改，修改立即生效。
 
 模块创建两个 MEDIUM 优先级线程：
 
@@ -14,13 +14,13 @@ CAN 与 UART IMU 数据转发模块 / Module that forwards IMU data over classic
 RamFS 命令 `set_imu`：
 
 - `set_imu`：打印当前 CAN 与 UART 开关、已开启的数据、周期、ID 和用法。
-- `set_imu set_delay <ms>`：设置发送周期，限制在 1 到 1000 ms。
+- `set_imu set_delay <ms>`：设置发送周期 `fb_cycle`，限制在 1 到 1000 ms。
 - `set_imu set_can_id <id>`：设置 ID（0–255），即 CAN 基础 ID，同时写入 UART 帧的 `id`。
 - `set_imu enable|disable accl|gyro|quat|eulr|can|uart`：开关单项输出。
 
-每条设置命令都写入 Database。默认配置：ID `0x30`，周期 1 ms，CAN 与 UART 开启，CAN 上发送角速度和欧拉角。
+每条设置命令都写入 Database。默认配置：`id` 为 `0x30`，`fb_cycle` 为 1 ms，CAN 与 UART 开启，CAN 上发送角速度和欧拉角。
 
-After construction, CanIMU subscribes to four IMU Topics (acceleration, angular velocity, quaternion, Euler angles), keeps the latest sample of each and sends them every `fb_cycle` ms over classic CAN and UART. The output switches, period and CAN ID are stored in the Database under the key `can_imu` and can be changed at run time with the RamFS command `set_imu`; a change takes effect immediately.
+After construction, CanIMU subscribes to four IMU Topics (acceleration, angular velocity, quaternion, Euler angles), keeps the latest sample of each and sends them every `fb_cycle` ms over classic CAN and UART. `fb_cycle` is a field of the configuration, which is stored in the Database under the key `can_imu` and also holds the CAN ID (`id`) and the output switches; on construction the value of this key is read, and a missing key is created with the default configuration. The configuration can be changed at run time with the RamFS command `set_imu`; a change takes effect immediately.
 
 The Module creates two MEDIUM-priority threads:
 
@@ -30,11 +30,11 @@ The Module creates two MEDIUM-priority threads:
 The RamFS command `set_imu`:
 
 - `set_imu`: print the current CAN and UART switches, the enabled data, the period, the ID and the usage.
-- `set_imu set_delay <ms>`: set the send period, limited to 1 to 1000 ms.
+- `set_imu set_delay <ms>`: set the send period `fb_cycle`, limited to 1 to 1000 ms.
 - `set_imu set_can_id <id>`: set the ID (0–255), which is the CAN base ID and is also written to the `id` field of the UART frame.
 - `set_imu enable|disable accl|gyro|quat|eulr|can|uart`: switch one output.
 
-Every setting command writes the Database. The default configuration is: ID `0x30`, period 1 ms, CAN and UART enabled, angular velocity and Euler angles sent on CAN.
+Every setting command writes the Database. The default configuration is: `id` of `0x30`, `fb_cycle` of 1 ms, CAN and UART enabled, angular velocity and Euler angles sent on CAN.
 
 ## 2. 输出帧格式 / Output Frame Formats
 
