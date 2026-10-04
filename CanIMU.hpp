@@ -2,87 +2,156 @@
 
 // clang-format off
 /* === MODULE MANIFEST V2 ===
-module_description: CAN/串口IMU通信模块 CAN/UART IMU Communication Module
-constructor_args:
-  - accl_topic: "imu_accl"
-  - gyro_topic: "imu_gyro"
-  - quat_topic: "imu_quat"
-  - eulr_topic: "imu_eulr"
-  - task_stack_depth_uart: 1536
-  - task_stack_depth_can: 1536
-template_args: []
-required_hardware: imu_can imu_data_uart ramfs database
+module_description: CAN 与 UART IMU 数据转发模块 / Module that forwards IMU data over classic CAN and UART
 depends: []
 === END MANIFEST === */
 // clang-format on
 
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 
-#include "app_framework.hpp"
 #include "can.hpp"
 #include "crc.hpp"
 #include "database.hpp"
 #include "float_encoder.hpp"
 #include "message.hpp"
+#include "ramfs.hpp"
+#include "thread.hpp"
 #include "timebase.hpp"
 #include "uart.hpp"
 
-class CanIMU : public LibXR::Application {
+/**
+ * @brief IMU 数据转发模块，订阅 IMU Topic 并通过经典 CAN 与 UART 周期发送。
+ *        Module that forwards IMU data: it subscribes to the IMU Topics and sends them
+ *        periodically over classic CAN and UART.
+ */
+class CanIMU
+{
  public:
-  explicit CanIMU(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
-                  const char* accl_topic, const char* gyro_topic,
-                  const char* quat_topic, const char* eulr_topic,
-                  uint32_t task_stack_depth_uart, uint32_t task_stack_depth_can)
-      : accl_topic_name_(accl_topic),
-        gyro_topic_name_(gyro_topic),
-        quat_topic_name_(quat_topic),
-        eulr_topic_name_(eulr_topic),
-        can_(hw.template FindOrExit<LibXR::CAN>({"imu_can"})),
-        uart_(hw.template FindOrExit<LibXR::UART>({"imu_data_uart"})),
-        config_(*hw.template FindOrExit<LibXR::Database>({"database"}),
-                "can_imu",
-                Configuration{0x30, 1, true, true, true, false, false, true}),
-        cmd_file_(LibXR::RamFS::CreateFile("set_imu", CommandFunc, this)) {
-    app.Register(*this);
+  /**
+   * @brief CanIMU 配置参数。
+   *        CanIMU configuration parameters.
+   */
+  struct Param
+  {
+    const char* accl_topic;  ///< 订阅的加速度 Topic 名称
+    ///< Name of the subscribed acceleration Topic
+    const char* gyro_topic;  ///< 订阅的角速度 Topic 名称
+    ///< Name of the subscribed angular-velocity Topic
+    const char* quat_topic;  ///< 订阅的四元数 Topic 名称
+    ///< Name of the subscribed quaternion Topic
+    const char* eulr_topic;  ///< 订阅的欧拉角 Topic 名称
+    ///< Name of the subscribed Euler-angle Topic
+    uint32_t task_stack_depth_uart;  ///< UART 发送线程栈深
+    ///< Stack depth of the UART thread
+    uint32_t task_stack_depth_can;  ///< CAN 发送线程栈深
+    ///< Stack depth of the CAN thread
+  };
 
-    hw.template FindOrExit<LibXR::RamFS>({"ramfs"})->Add(cmd_file_);
+  /**
+   * @brief 构造 CanIMU：注册 RamFS 命令与 Topic 回调，创建 UART 与 CAN 发送线程。
+   *        Construct CanIMU: register the RamFS command and the Topic callbacks, and
+   *        create the UART and CAN sending threads.
+   *
+   * @param can_bus 发送 IMU 数据的 CAN。
+   *                CAN bus that sends the IMU data.
+   * @param uart 发送 IMU 数据的 UART。
+   *             UART that sends the IMU data.
+   * @param database 保存输出配置的 Database。
+   *                 Database that stores the output configuration.
+   * @param ramfs 接收 `set_imu` 命令的 RamFS。
+   *              RamFS that receives the `set_imu` command.
+   * @param param 配置参数。
+   *              Configuration parameters.
+   */
+  explicit CanIMU(LibXR::CAN& can_bus, LibXR::UART& uart, LibXR::Database& database,
+                  LibXR::RamFS& ramfs,
+                  const Param& param = {.accl_topic = "imu_accl",
+                                        .gyro_topic = "imu_gyro",
+                                        .quat_topic = "imu_quat",
+                                        .eulr_topic = "imu_eulr",
+                                        .task_stack_depth_uart = 1536,
+                                        .task_stack_depth_can = 1536})
+      : accl_topic_name_(param.accl_topic),
+        gyro_topic_name_(param.gyro_topic),
+        quat_topic_name_(param.quat_topic),
+        eulr_topic_name_(param.eulr_topic),
+        can_(std::addressof(can_bus)),
+        uart_(std::addressof(uart)),
+        config_(database, "can_imu",
+                Configuration{.id = 0x30,
+                              .fb_cycle = 1,
+                              .can_enabled = true,
+                              .uart_enabled = true,
+                              .eulr_enabled = true,
+                              .quat_enabled = false,
+                              .accl_enabled = false,
+                              .gyro_enabled = true}),
+        cmd_file_(LibXR::RamFS::CreateFile("set_imu", CommandFunc, this))
+  {
+    ramfs.Add(cmd_file_);
 
     RegisterTopicCallbacks();
 
-    thread_uart_.Create(this, ThreadUart, "can_imu_uart", task_stack_depth_uart,
+    thread_uart_.Create(this, ThreadUart, "can_imu_uart", param.task_stack_depth_uart,
                         LibXR::Thread::Priority::MEDIUM);
-    thread_can_.Create(this, ThreadCan, "can_imu_can", task_stack_depth_can,
+    thread_can_.Create(this, ThreadCan, "can_imu_can", param.task_stack_depth_can,
                        LibXR::Thread::Priority::MEDIUM);
   }
 
-  void OnMonitor() override {
-    // Optional: Add self-check, debug output, frequency monitor, etc.
-  }
-
-  static int CommandFunc(CanIMU* imu, int argc, char** argv) {
-    if (argc == 1) {
-      if (imu->config_.data_.can_enabled) {
+  /**
+   * @brief RamFS 命令 `set_imu`：查看状态，设置周期与 ID，开关单项输出，并写入 Database。
+   *        RamFS command `set_imu`: show the state, set the period and ID, switch single
+   *        outputs, and write the Database.
+   *
+   * @param imu CanIMU 实例。
+   *            CanIMU instance.
+   * @param argc 参数个数。
+   *             Argument count.
+   * @param argv 参数列表。
+   *             Argument list.
+   * @return 0 表示命令已处理；开关名无效时返回 -1。
+   *         0 when the command is handled; -1 when the switch name is invalid.
+   */
+  static int CommandFunc(CanIMU* imu, int argc, char** argv)
+  {
+    if (argc == 1)
+    {
+      if (imu->config_.data_.can_enabled)
+      {
         LibXR::STDIO::Printf<"can mode\r\ndata:">();
-        if (imu->config_.data_.accl_enabled) {
+        if (imu->config_.data_.accl_enabled)
+        {
           LibXR::STDIO::Printf<"accl,">();
         }
-        if (imu->config_.data_.gyro_enabled) {
+        if (imu->config_.data_.gyro_enabled)
+        {
           LibXR::STDIO::Printf<"gyro,">();
         }
-        if (imu->config_.data_.quat_enabled) {
+        if (imu->config_.data_.quat_enabled)
+        {
           LibXR::STDIO::Printf<"quat,">();
         }
-        if (imu->config_.data_.eulr_enabled) {
+        if (imu->config_.data_.eulr_enabled)
+        {
           LibXR::STDIO::Printf<"eulr,">();
         }
         LibXR::STDIO::Printf<"\r\n">();
-      } else {
+      }
+      else
+      {
         LibXR::STDIO::Printf<"can output disabled.\r\n">();
       }
 
-      if (imu->config_.data_.uart_enabled) {
+      if (imu->config_.data_.uart_enabled)
+      {
         LibXR::STDIO::Printf<"uart output enabled.\r\n">();
-      } else {
+      }
+      else
+      {
         LibXR::STDIO::Printf<"uart output disabled.\r\n">();
       }
 
@@ -92,16 +161,26 @@ class CanIMU : public LibXR::Application {
           static_cast<unsigned>(imu->config_.data_.id));
       LibXR::STDIO::Printf<"\tset_delay  [time]  设置发送延时ms\r\n">();
       LibXR::STDIO::Printf<"\tset_can_id [id]    设置can id\r\n">();
-      LibXR::STDIO::Printf<"\tenable/disable     "
+      LibXR::STDIO::Printf<
+          "\tenable/disable     "
           "[accl/gyro/quat/eulr/can/uart]\r\n">();
-    } else if (argc == 3 && strcmp(argv[1], "set_delay") == 0) {
-      int delay = std::stoi(argv[2]);
+    }
+    else if (argc == 3 && strcmp(argv[1], "set_delay") == 0)
+    {
+      int delay = 0;
+      if (!ParseInt(argv[2], delay))
+      {
+        LibXR::STDIO::Printf<"命令错误\r\n">();
+        return -1;
+      }
 
-      if (delay > 1000) {
+      if (delay > 1000)
+      {
         delay = 1000;
       }
 
-      if (delay < 1) {
+      if (delay < 1)
+      {
         delay = 1;
       }
 
@@ -110,53 +189,98 @@ class CanIMU : public LibXR::Application {
       LibXR::STDIO::Printf<"delay:%d\r\n">(delay);
 
       imu->config_.Set(imu->config_.data_);
-    } else if (argc == 3 && strcmp(argv[1], "enable") == 0) {
-      if (strcmp(argv[2], "accl") == 0) {
+    }
+    else if (argc == 3 && strcmp(argv[1], "enable") == 0)
+    {
+      if (strcmp(argv[2], "accl") == 0)
+      {
         imu->config_.data_.accl_enabled = true;
-      } else if (strcmp(argv[2], "gyro") == 0) {
+      }
+      else if (strcmp(argv[2], "gyro") == 0)
+      {
         imu->config_.data_.gyro_enabled = true;
-      } else if (strcmp(argv[2], "quat") == 0) {
+      }
+      else if (strcmp(argv[2], "quat") == 0)
+      {
         imu->config_.data_.quat_enabled = true;
-      } else if (strcmp(argv[2], "eulr") == 0) {
+      }
+      else if (strcmp(argv[2], "eulr") == 0)
+      {
         imu->config_.data_.eulr_enabled = true;
-      } else if (strcmp(argv[2], "can") == 0) {
+      }
+      else if (strcmp(argv[2], "can") == 0)
+      {
         imu->config_.data_.can_enabled = true;
-      } else if (strcmp(argv[2], "uart") == 0) {
+      }
+      else if (strcmp(argv[2], "uart") == 0)
+      {
         imu->config_.data_.uart_enabled = true;
-      } else {
+      }
+      else
+      {
         LibXR::STDIO::Printf<"命令错误\r\n">();
         return -1;
       }
 
       imu->config_.Set(imu->config_.data_);
-    } else if (argc == 3 && strcmp(argv[1], "disable") == 0) {
-      if (strcmp(argv[2], "accl") == 0) {
+    }
+    else if (argc == 3 && strcmp(argv[1], "disable") == 0)
+    {
+      if (strcmp(argv[2], "accl") == 0)
+      {
         imu->config_.data_.accl_enabled = false;
-      } else if (strcmp(argv[2], "gyro") == 0) {
+      }
+      else if (strcmp(argv[2], "gyro") == 0)
+      {
         imu->config_.data_.gyro_enabled = false;
-      } else if (strcmp(argv[2], "quat") == 0) {
+      }
+      else if (strcmp(argv[2], "quat") == 0)
+      {
         imu->config_.data_.quat_enabled = false;
-      } else if (strcmp(argv[2], "eulr") == 0) {
+      }
+      else if (strcmp(argv[2], "eulr") == 0)
+      {
         imu->config_.data_.eulr_enabled = false;
-      } else if (strcmp(argv[2], "can") == 0) {
+      }
+      else if (strcmp(argv[2], "can") == 0)
+      {
         imu->config_.data_.can_enabled = false;
-      } else if (strcmp(argv[2], "uart") == 0) {
+      }
+      else if (strcmp(argv[2], "uart") == 0)
+      {
         imu->config_.data_.uart_enabled = false;
-      } else {
+      }
+      else
+      {
         LibXR::STDIO::Printf<"命令错误\r\n">();
         return -1;
       }
 
       imu->config_.Set(imu->config_.data_);
-    } else if (argc == 3 && strcmp(argv[1], "set_can_id") == 0) {
-      int id = std::stoi(argv[2]);
+    }
+    else if (argc == 3 && strcmp(argv[1], "set_can_id") == 0)
+    {
+      int id = 0;
+      if (!ParseInt(argv[2], id))
+      {
+        LibXR::STDIO::Printf<"命令错误\r\n">();
+        return -1;
+      }
+
+      if (id < 0 || id > 0xFF)
+      {
+        LibXR::STDIO::Printf<"can_id 超出范围 (0-255)\r\n">();
+        return -1;
+      }
 
       imu->config_.data_.id = id;
 
       LibXR::STDIO::Printf<"can_id:%d\r\n">(id);
 
       imu->config_.Set(imu->config_.data_);
-    } else {
+    }
+    else
+    {
       LibXR::STDIO::Printf<"命令错误\r\n">();
     }
 
@@ -164,12 +288,43 @@ class CanIMU : public LibXR::Application {
   }
 
  private:
+  /**
+   * @brief 解析十进制整数；整个字符串必须是合法数字且不溢出 int。
+   *        Parse a decimal integer; the whole string must be a valid number that fits in
+   *        int.
+   *
+   * @param text 输入字符串。
+   *             Input string.
+   * @param value 解析结果。
+   *              Parsed value.
+   * @return 解析成功返回 true。
+   *         True if parsing succeeded.
+   */
+  static bool ParseInt(const char* text, int& value)
+  {
+    if (text == nullptr || text[0] == '\0')
+    {
+      return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0' || parsed < INT_MIN ||
+        parsed > INT_MAX)
+    {
+      return false;
+    }
+    value = static_cast<int>(parsed);
+    return true;
+  }
+
   const char* accl_topic_name_;
   const char* gyro_topic_name_;
   const char* quat_topic_name_;
   const char* eulr_topic_name_;
 
-  struct __attribute__((packed)) Configuration {
+  struct __attribute__((packed)) Configuration
+  {
     uint32_t id;
     uint32_t fb_cycle;
     bool can_enabled;
@@ -180,7 +335,8 @@ class CanIMU : public LibXR::Application {
     bool gyro_enabled;
   };
 
-  struct __attribute__((packed)) Data {
+  struct __attribute__((packed)) Data
+  {
     uint8_t prefix = 0xA5;
     uint8_t id = 0x30;  // Default ID
     uint32_t time = 0;
@@ -191,15 +347,18 @@ class CanIMU : public LibXR::Application {
     uint8_t crc8 = 0;
   };
 
-  union CanData3 {
-    struct __attribute__((packed)) {
+  union CanData3
+  {
+    struct __attribute__((packed))
+    {
       int32_t data1 : 21;
       int32_t data2 : 21;
       int32_t data3 : 21;
       int32_t res : 1;
     };
 
-    struct __attribute__((packed)) {
+    struct __attribute__((packed))
+    {
       uint32_t data1_unsigned : 21;
       uint32_t data2_unsigned : 21;
       uint32_t data3_unsigned : 21;
@@ -207,14 +366,22 @@ class CanIMU : public LibXR::Application {
     };
   };
 
-  struct __attribute__((packed)) CanData4 {
-    union {
+  struct __attribute__((packed)) CanData4
+  {
+    union
+    {
       int16_t data[4];
       uint16_t data_unsigned[4];
     };
   };
 
-  enum class CanPackID : uint32_t { ACCL = 0, GYRO = 1, EULR = 3, QUAT = 4 };
+  enum class CanPackID : uint32_t
+  {
+    ACCL = 0,
+    GYRO = 1,
+    EULR = 3,
+    QUAT = 4
+  };
 
   LibXR::CAN* can_;
   LibXR::UART* uart_;
@@ -231,11 +398,13 @@ class CanIMU : public LibXR::Application {
   Eigen::Matrix<float, 3, 1> gyro_ = {0.0f, 0.0f, 0.0f};
   Eigen::Matrix<float, 3, 1> accl_ = {0.0f, 0.0f, 0.0f};
 
-  struct Vector3Sample {
+  struct Vector3Sample
+  {
     float data[3];
   };
 
-  struct QuaternionSample {
+  struct QuaternionSample
+  {
     float data[4];
   };
 
@@ -250,15 +419,12 @@ class CanIMU : public LibXR::Application {
   LibXR::Topic::Callback eulr_callback_;
   LibXR::Mutex data_mutex_;
 
-  void RegisterTopicCallbacks() {
-    auto accl_topic =
-        LibXR::Topic::CreateTopic<decltype(accl_)>(accl_topic_name_);
-    auto gyro_topic =
-        LibXR::Topic::CreateTopic<decltype(gyro_)>(gyro_topic_name_);
-    auto quat_topic =
-        LibXR::Topic::CreateTopic<decltype(quat_)>(quat_topic_name_);
-    auto eulr_topic =
-        LibXR::Topic::CreateTopic<decltype(eulr_)>(eulr_topic_name_);
+  void RegisterTopicCallbacks()
+  {
+    auto accl_topic = LibXR::Topic::CreateTopic<decltype(accl_)>(accl_topic_name_);
+    auto gyro_topic = LibXR::Topic::CreateTopic<decltype(gyro_)>(gyro_topic_name_);
+    auto quat_topic = LibXR::Topic::CreateTopic<decltype(quat_)>(quat_topic_name_);
+    auto eulr_topic = LibXR::Topic::CreateTopic<decltype(eulr_)>(eulr_topic_name_);
 
     accl_callback_ = LibXR::Topic::Callback::Create(OnAcclTopic, this);
     gyro_callback_ = LibXR::Topic::Callback::Create(OnGyroTopic, this);
@@ -272,8 +438,10 @@ class CanIMU : public LibXR::Application {
   }
 
   template <typename Queue, typename Sample>
-  static void PushLatest(Queue& queue, const Sample& sample) {
-    if (queue.Push(sample) == LibXR::ErrorCode::OK) {
+  static void PushLatest(Queue& queue, const Sample& sample)
+  {
+    if (queue.Push(sample) == LibXR::ErrorCode::OK)
+    {
       return;
     }
 
@@ -282,65 +450,76 @@ class CanIMU : public LibXR::Application {
     (void)queue.Push(sample);
   }
 
-  static void OnAcclTopic(bool, CanIMU* self,
-                          const Eigen::Matrix<float, 3, 1>& data) {
+  static void OnAcclTopic(bool, CanIMU* self, const Eigen::Matrix<float, 3, 1>& data)
+  {
     const Vector3Sample sample{{data.x(), data.y(), data.z()}};
     PushLatest(self->accl_queue_, sample);
   }
 
-  static void OnGyroTopic(bool, CanIMU* self,
-                          const Eigen::Matrix<float, 3, 1>& data) {
+  static void OnGyroTopic(bool, CanIMU* self, const Eigen::Matrix<float, 3, 1>& data)
+  {
     const Vector3Sample sample{{data.x(), data.y(), data.z()}};
     PushLatest(self->gyro_queue_, sample);
   }
 
-  static void OnQuatTopic(bool, CanIMU* self,
-                          const LibXR::Quaternion<float>& data) {
+  static void OnQuatTopic(bool, CanIMU* self, const LibXR::Quaternion<float>& data)
+  {
     const QuaternionSample sample{{data.w(), data.x(), data.y(), data.z()}};
     PushLatest(self->quat_queue_, sample);
   }
 
-  static void OnEulrTopic(bool, CanIMU* self,
-                          const LibXR::EulerAngle<float>& data) {
+  static void OnEulrTopic(bool, CanIMU* self, const LibXR::EulerAngle<float>& data)
+  {
     const Vector3Sample sample{{data.Roll(), data.Pitch(), data.Yaw()}};
     PushLatest(self->eulr_queue_, sample);
   }
 
-  void DrainTopicQueues() {
+  void DrainTopicQueues()
+  {
     Vector3Sample vector_sample{};
     QuaternionSample quat_sample{};
 
     LibXR::Mutex::LockGuard lock(data_mutex_);
 
-    while (accl_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+    while (accl_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
+    {
       accl_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
     }
 
-    while (gyro_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+    while (gyro_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
+    {
       gyro_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
     }
 
-    while (quat_queue_.Pop(quat_sample) == LibXR::ErrorCode::OK) {
+    while (quat_queue_.Pop(quat_sample) == LibXR::ErrorCode::OK)
+    {
       quat_ = LibXR::Quaternion<float>(quat_sample.data);
     }
 
-    while (eulr_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK) {
+    while (eulr_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
+    {
       eulr_ = LibXR::EulerAngle<float>(vector_sample.data);
     }
   }
 
-  static void ThreadUart(CanIMU* self) {
-    self->uart_->SetConfig({1000000, LibXR::UART::Parity::NO_PARITY, 8, 1});
+  static void ThreadUart(CanIMU* self)
+  {
+    self->uart_->SetConfig({.baudrate = 1000000,
+                            .parity = LibXR::UART::Parity::NO_PARITY,
+                            .data_bits = 8,
+                            .stop_bits = 1});
 
     Data send_buffer = {};
     LibXR::WriteOperation write_op(self->uart_write_sem_);
 
     auto last_waskup_time = LibXR::Timebase::GetMilliseconds();
 
-    while (true) {
+    while (true)
+    {
       self->DrainTopicQueues();
 
-      if (self->config_.data_.uart_enabled) {
+      if (self->config_.data_.uart_enabled)
+      {
         send_buffer.prefix = 0xA5;
         send_buffer.id = self->config_.data_.id;
         send_buffer.time = LibXR::Timebase::GetMilliseconds();
@@ -354,9 +533,9 @@ class CanIMU : public LibXR::Application {
           memcpy(send_buffer.accl, self->accl_.data(), sizeof(send_buffer.accl));
           memcpy(send_buffer.eulr, self->eulr_.data_, sizeof(send_buffer.eulr));
         }
-        send_buffer.crc8 = LibXR::CRC8::Calculate(
-            reinterpret_cast<const uint8_t*>(&send_buffer),
-            sizeof(Data) - sizeof(uint8_t));
+        send_buffer.crc8 =
+            LibXR::CRC8::Calculate(reinterpret_cast<const uint8_t*>(&send_buffer),
+                                   sizeof(Data) - sizeof(uint8_t));
 
         self->uart_->Write(send_buffer, write_op);
       }
@@ -365,7 +544,8 @@ class CanIMU : public LibXR::Application {
     }
   }
 
-  static void ThreadCan(CanIMU* self) {
+  static void ThreadCan(CanIMU* self)
+  {
     auto last_waskup_time = LibXR::Timebase::GetMilliseconds();
 
     LibXR::CAN::ClassicPack classic_pack = {};
@@ -374,13 +554,16 @@ class CanIMU : public LibXR::Application {
     CanData3* can_data3 = reinterpret_cast<CanData3*>(classic_pack.data);
     CanData4* can_data4 = reinterpret_cast<CanData4*>(classic_pack.data);
 
-    while (true) {
-      if (self->config_.data_.can_enabled) {
+    while (true)
+    {
+      if (self->config_.data_.can_enabled)
+      {
         classic_pack.type = LibXR::CAN::Type::STANDARD;
 
         using Encoder21 = LibXR::FloatEncoder<21>;
 
-        if (self->config_.data_.gyro_enabled) {
+        if (self->config_.data_.gyro_enabled)
+        {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::GYRO);
           Encoder21 encoder(-2000.0f * M_PI / 180.0f,
@@ -397,7 +580,8 @@ class CanIMU : public LibXR::Application {
           self->can_->AddMessage(classic_pack);
         }
 
-        if (self->config_.data_.accl_enabled) {
+        if (self->config_.data_.accl_enabled)
+        {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::ACCL);
           Encoder21 encoder(-24.0f, 24.0f);  // ±24g
@@ -413,7 +597,8 @@ class CanIMU : public LibXR::Application {
           self->can_->AddMessage(classic_pack);
         }
 
-        if (self->config_.data_.eulr_enabled) {
+        if (self->config_.data_.eulr_enabled)
+        {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::EULR);
           Encoder21 encoder(-M_PI, M_PI);  // Euler angles in rad
@@ -428,11 +613,11 @@ class CanIMU : public LibXR::Application {
           self->can_->AddMessage(classic_pack);
         }
 
-        if (self->config_.data_.quat_enabled) {
+        if (self->config_.data_.quat_enabled)
+        {
           classic_pack.id =
               self->config_.data_.id + static_cast<uint32_t>(CanPackID::QUAT);
-          constexpr float SCALE =
-              static_cast<float>(INT16_MAX);  // int16_t scaling
+          constexpr float SCALE = static_cast<float>(INT16_MAX);  // int16_t scaling
           LibXR::Quaternion<float> quat;
           {
             LibXR::Mutex::LockGuard lock(self->data_mutex_);
