@@ -4,7 +4,7 @@ CAN 与 UART IMU 数据转发模块 / Module that forwards IMU data over classic
 
 ## 1. 模块作用 / Purpose
 
-构造后，CanIMU 订阅四个 IMU Topic（加速度、角速度、四元数、欧拉角），各保留最近的样本，并以 `fb_cycle` 毫秒为周期通过经典 CAN 和 UART 发出。`fb_cycle` 是配置的字段，该配置保存在 Database 的键 `can_imu` 中，另含 CAN ID（`id`）与各输出开关；构造时读取该键的值，键缺失时以默认配置创建。配置可用 RamFS 命令 `set_imu` 在运行时修改，修改立即生效。
+构造后，CanIMU 订阅四个 IMU Topic（加速度、角速度、四元数、欧拉角），各保留最近的样本，并以 `fb_cycle` 毫秒为周期通过经典 CAN 和 UART 发出。`fb_cycle` 是输出设置的字段，输出设置保存在 Database 的键 `can_imu` 中，另含 CAN ID（`id`）与各输出开关；构造时读取该键的值，键缺失时以默认输出设置创建。输出设置可用 RamFS 命令 `set_imu` 在运行时修改，修改立即生效。
 
 模块创建两个 MEDIUM 优先级线程：
 
@@ -18,9 +18,9 @@ RamFS 命令 `set_imu`：
 - `set_imu set_can_id <id>`：设置 ID（0–255），即 CAN 基础 ID，同时写入 UART 帧的 `id`。
 - `set_imu enable|disable accl|gyro|quat|eulr|can|uart`：开关单项输出。
 
-每条设置命令都写入 Database。默认配置：`id` 为 `0x30`，`fb_cycle` 为 1 ms，CAN 与 UART 开启，CAN 上发送角速度和欧拉角。
+每条设置命令都写入 Database。默认输出设置：`id` 为 `0x30`，`fb_cycle` 为 1 ms，CAN 与 UART 开启，CAN 上发送角速度和欧拉角。
 
-After construction, CanIMU subscribes to four IMU Topics (acceleration, angular velocity, quaternion, Euler angles), keeps the latest sample of each and sends them every `fb_cycle` ms over classic CAN and UART. `fb_cycle` is a field of the configuration, which is stored in the Database under the key `can_imu` and also holds the CAN ID (`id`) and the output switches; on construction the value of this key is read, and a missing key is created with the default configuration. The configuration can be changed at run time with the RamFS command `set_imu`; a change takes effect immediately.
+After construction, CanIMU subscribes to four IMU Topics (acceleration, angular velocity, quaternion, Euler angles), keeps the latest sample of each and sends them every `fb_cycle` ms over classic CAN and UART. `fb_cycle` is a field of the output settings, which are stored in the Database under the key `can_imu` and also hold the CAN ID (`id`) and the output switches; on construction the value of this key is read, and a missing key is created with the default output settings. The output settings can be changed at run time with the RamFS command `set_imu`; a change takes effect immediately.
 
 The Module creates two MEDIUM-priority threads:
 
@@ -34,7 +34,7 @@ The RamFS command `set_imu`:
 - `set_imu set_can_id <id>`: set the ID (0–255), which is the CAN base ID and is also written to the `id` field of the UART frame.
 - `set_imu enable|disable accl|gyro|quat|eulr|can|uart`: switch one output.
 
-Every setting command writes the Database. The default configuration is: `id` of `0x30`, `fb_cycle` of 1 ms, CAN and UART enabled, angular velocity and Euler angles sent on CAN.
+Every setting command writes the Database. The default output settings are: `id` of `0x30`, `fb_cycle` of 1 ms, CAN and UART enabled, angular velocity and Euler angles sent on CAN.
 
 ## 2. 输出帧格式 / Output Frame Formats
 
@@ -43,7 +43,7 @@ UART 帧小端、紧凑排列，共 59 字节：
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `prefix` | `uint8_t` | `0xA5` |
-| `id` | `uint8_t` | 配置的 ID |
+| `id` | `uint8_t` | 设置的 ID |
 | `time` | `uint32_t` | 发送时刻，单位 ms |
 | `quat[4]` | `float` | w, x, y, z |
 | `gyro[3]` | `float` | 单位 rad/s |
@@ -51,7 +51,7 @@ UART 帧小端、紧凑排列，共 59 字节：
 | `eulr[3]` | `float` | roll, pitch, yaw，单位 rad |
 | `crc8` | `uint8_t` | 前面所有字节的 LibXR CRC8 |
 
-CAN 帧为标准帧，DLC 8，ID 为配置的 ID 加偏移。三轴数据为三个 21 位无符号字段，从最低位起依次打包，由 `LibXR::FloatEncoder<21>` 把给定区间线性映射到 0 到 2^21-1。
+CAN 帧为标准帧，DLC 8，ID 为设置的 ID 加偏移。三轴数据为三个 21 位无符号字段，从最低位起依次打包，由 `LibXR::FloatEncoder<21>` 把给定区间线性映射到 0 到 2^21-1。
 
 | 偏移 | 内容 | 编码 |
 | --- | --- | --- |
@@ -101,25 +101,25 @@ explicit CanIMU(LibXR::CAN& can_bus,
 
 - `can_bus`：发送 IMU 数据的 `LibXR::CAN`，取自 BSP 的硬件注册（`XR_REGISTER`）。
 - `uart`：发送 IMU 数据的 `LibXR::UART`，取自 BSP 的硬件注册。
-- `database`：保存输出配置的 `LibXR::Database`，取自 BSP 的硬件注册。
+- `database`：保存输出设置的 `LibXR::Database`，取自 BSP 的硬件注册。
 - `ramfs`：注册 `set_imu` 命令的 `LibXR::RamFS`，取自 BSP 的硬件注册。
 
 配置参数（`Param`）：
 
 - `accl_topic`、`gyro_topic`、`quat_topic`、`eulr_topic`：订阅的 Topic 名称，默认 `"imu_accl"`、`"imu_gyro"`、`"imu_quat"`、`"imu_eulr"`。
-- `task_stack_depth_uart`、`task_stack_depth_can`：两个线程的栈深，默认 1536。
+- `task_stack_depth_uart`、`task_stack_depth_can`：两个线程的栈深，单位字节，默认 1536。
 
 Dependencies:
 
 - `can_bus`: the `LibXR::CAN` that sends the IMU data, taken from the BSP's Registration (`XR_REGISTER`).
 - `uart`: the `LibXR::UART` that sends the IMU data, taken from the BSP's Registration.
-- `database`: the `LibXR::Database` that stores the output configuration, taken from the BSP's Registration.
+- `database`: the `LibXR::Database` that stores the output settings, taken from the BSP's Registration.
 - `ramfs`: the `LibXR::RamFS` that receives the `set_imu` command, taken from the BSP's Registration.
 
 Configuration parameters (`Param`):
 
 - `accl_topic`, `gyro_topic`, `quat_topic`, `eulr_topic`: names of the subscribed Topics, default `"imu_accl"`, `"imu_gyro"`, `"imu_quat"`, `"imu_eulr"`.
-- `task_stack_depth_uart`, `task_stack_depth_can`: stack depth of the two threads, default 1536.
+- `task_stack_depth_uart`, `task_stack_depth_can`: stack depth of the two threads in bytes, default 1536.
 
 ## 4. Topic
 
