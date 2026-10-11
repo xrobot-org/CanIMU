@@ -17,6 +17,7 @@ depends: []
 #include "crc.hpp"
 #include "database.hpp"
 #include "float_encoder.hpp"
+#include "latest_snapshot.hpp"
 #include "message.hpp"
 #include "ramfs.hpp"
 #include "thread.hpp"
@@ -408,10 +409,13 @@ class CanIMU
     float data[4];
   };
 
-  LibXR::MPMCQueue<Vector3Sample> accl_queue_{4};
-  LibXR::MPMCQueue<Vector3Sample> gyro_queue_{4};
-  LibXR::MPMCQueue<QuaternionSample> quat_queue_{4};
-  LibXR::MPMCQueue<Vector3Sample> eulr_queue_{4};
+  /// 每个量一个最新值邮箱：Topic 回调写、can_imu_uart 线程读，只保留最新一份
+  /// One latest-value mailbox per quantity: written by the Topic callback, read by
+  /// the can_imu_uart thread, keeping only the latest value
+  LibXR::LatestSnapshot<Vector3Sample> accl_snapshot_{{0.0f, 0.0f, 0.0f}};
+  LibXR::LatestSnapshot<Vector3Sample> gyro_snapshot_{{0.0f, 0.0f, 0.0f}};
+  LibXR::LatestSnapshot<QuaternionSample> quat_snapshot_{{1.0f, 0.0f, 0.0f, 0.0f}};
+  LibXR::LatestSnapshot<Vector3Sample> eulr_snapshot_{{0.0f, 0.0f, 0.0f}};
 
   LibXR::Topic::Callback accl_callback_;
   LibXR::Topic::Callback gyro_callback_;
@@ -437,41 +441,28 @@ class CanIMU
     eulr_topic.RegisterCallback(eulr_callback_);
   }
 
-  template <typename Queue, typename Sample>
-  static void PushLatest(Queue& queue, const Sample& sample)
-  {
-    if (queue.Push(sample) == LibXR::ErrorCode::OK)
-    {
-      return;
-    }
-
-    Sample dropped{};
-    (void)queue.Pop(dropped);
-    (void)queue.Push(sample);
-  }
-
   static void OnAcclTopic(bool, CanIMU* self, const Eigen::Matrix<float, 3, 1>& data)
   {
     const Vector3Sample sample{{data.x(), data.y(), data.z()}};
-    PushLatest(self->accl_queue_, sample);
+    self->accl_snapshot_.Store(sample);
   }
 
   static void OnGyroTopic(bool, CanIMU* self, const Eigen::Matrix<float, 3, 1>& data)
   {
     const Vector3Sample sample{{data.x(), data.y(), data.z()}};
-    PushLatest(self->gyro_queue_, sample);
+    self->gyro_snapshot_.Store(sample);
   }
 
   static void OnQuatTopic(bool, CanIMU* self, const LibXR::Quaternion<float>& data)
   {
     const QuaternionSample sample{{data.w(), data.x(), data.y(), data.z()}};
-    PushLatest(self->quat_queue_, sample);
+    self->quat_snapshot_.Store(sample);
   }
 
   static void OnEulrTopic(bool, CanIMU* self, const LibXR::EulerAngle<float>& data)
   {
     const Vector3Sample sample{{data.Roll(), data.Pitch(), data.Yaw()}};
-    PushLatest(self->eulr_queue_, sample);
+    self->eulr_snapshot_.Store(sample);
   }
 
   void DrainTopicQueues()
@@ -481,25 +472,20 @@ class CanIMU
 
     LibXR::Mutex::LockGuard lock(data_mutex_);
 
-    while (accl_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
-    {
-      accl_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
-    }
+    // 没有新发布时 LoadLatest 输出消费者上次取得的值，成员值不变
+    // Without a new publication LoadLatest outputs the value the consumer acquired
+    // last, so the members keep their value
+    (void)accl_snapshot_.LoadLatest(vector_sample);
+    accl_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
 
-    while (gyro_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
-    {
-      gyro_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
-    }
+    (void)gyro_snapshot_.LoadLatest(vector_sample);
+    gyro_ = {vector_sample.data[0], vector_sample.data[1], vector_sample.data[2]};
 
-    while (quat_queue_.Pop(quat_sample) == LibXR::ErrorCode::OK)
-    {
-      quat_ = LibXR::Quaternion<float>(quat_sample.data);
-    }
+    (void)quat_snapshot_.LoadLatest(quat_sample);
+    quat_ = LibXR::Quaternion<float>(quat_sample.data);
 
-    while (eulr_queue_.Pop(vector_sample) == LibXR::ErrorCode::OK)
-    {
-      eulr_ = LibXR::EulerAngle<float>(vector_sample.data);
-    }
+    (void)eulr_snapshot_.LoadLatest(vector_sample);
+    eulr_ = LibXR::EulerAngle<float>(vector_sample.data);
   }
 
   static void ThreadUart(CanIMU* self)
